@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -229,11 +230,6 @@
   .m-assign{ display:flex; align-items:center; gap:8px; }
   .assign-dot{
     width:10px; height:10px; border-radius:50%; flex-shrink:0; border:1px solid;
-  }
-  .need-support{
-    font-size:12.5px; font-weight:700; color:var(--alert);
-    background:var(--alert-dim); border:1px solid var(--alert-dim);
-    padding:7px 12px; border-radius:7px; white-space:nowrap;
   }
   .footer-credit{
     text-align:center; color:var(--chalk-dim); font-size:12px;
@@ -812,18 +808,36 @@
 
   // ---------- workload sidebar (matches for the currently viewed day) ----------
   // Simple count: assigned to that analyst, not in the no-assign window, and not finished yet.
+  // Matches before the page-break divider count normally (if assigned and not finished).
+  // Matches after the divider (tonight's 8 PM+ games) only count once they're within
+  // 3 hours of going live — otherwise the number looks inflated hours before anyone
+  // actually needs to act on them.
+  function findBreakIndex(){
+    let idx = -1;
+    matches.forEach((m,i)=>{
+      if(idx === -1 && i > 0 && hourOf(m.timeIst) >= 20) idx = i;
+    });
+    return idx;
+  }
+
   function renderWorkloadPanel(){
     document.getElementById('workloadSub').textContent =
       matches.length ? `${fmtDateHuman(currentDateKey)}` : 'No matches loaded';
 
+    const breakIndex = findBreakIndex();
     const counts = {};
     analysts.forEach(a => counts[a.id] = 0);
 
-    matches.forEach(m=>{
-      if(inNoAssignWindow(m.timeIst)) return; // never assigned to anyone, so never counted
+    matches.forEach((m, idx)=>{
       const analystId = assignments[m.id]?.analystId;
-      if(!analystId || counts[analystId] === undefined) return;
+      if(!analystId || counts[analystId] === undefined) return; // unassigned (incl. un-actioned Need support) never counts
       if(isMatchFinished(m.sortMs)) return; // finished matches don't count toward current workload
+
+      const afterBreak = breakIndex !== -1 && idx >= breakIndex;
+      if(afterBreak){
+        const msUntilLive = m.sortMs - Date.now();
+        if(msUntilLive > 3 * 3600000) return; // more than 3h away — skip for now
+      }
       counts[analystId]++;
     });
 
@@ -861,19 +875,21 @@
       const a = assignments[m.id] || {};
       const reported = !!a.reported;
       const afterShift = inNoAssignWindow(m.timeIst);
-      if(afterShift){ needSupportCount++; }
-      else if(!a.analystId){ unassignedCount++; }
+      if(afterShift && !a.analystId){ needSupportCount++; }
+      else if(!afterShift && !a.analystId){ unassignedCount++; }
       if(reported) reportedCount++;
       const color = a.analystId ? analystColor(a.analystId) : null;
-      const optionsHtml = ['<option value="">— assign —</option>']
+      const placeholderOption = afterShift
+        ? `<option value="">Need support</option>`
+        : `<option value="">— assign —</option>`;
+      const optionsHtml = [placeholderOption]
         .concat(analysts.map(an => `<option value="${an.id}" ${a.analystId===an.id?'selected':''}>${escapeHtml(an.name)}${an.active?'':' (leave)'}</option>`))
         .join('');
-      const assignHtml = afterShift
-        ? `<span class="need-support">Need support</span>`
-        : `
-            <span class="assign-dot" style="background:${color || 'transparent'}; border-color:${color || 'var(--line)'}"></span>
-            <select class="${a.analystId?'':'empty'}" data-mid="${m.id}" style="${color ? `border-color:${color};color:${color};background:${hexToRgba(color,0.14)};` : ''}">${optionsHtml}</select>
-          `;
+      const stillNeedsSupport = afterShift && !a.analystId;
+      const assignHtml = `
+          <span class="assign-dot" style="background:${color || 'transparent'}; border-color:${stillNeedsSupport ? 'var(--alert)' : (color || 'var(--line)')}"></span>
+          <select class="${a.analystId?'':'empty'} ${stillNeedsSupport?'needs-support-select':''}" data-mid="${m.id}" style="${color ? `border-color:${color};color:${color};background:${hexToRgba(color,0.14)};` : ''}">${optionsHtml}</select>
+        `;
 
       // Insert a divider right before the first match starting at/after 8 PM IST —
       // that's shift start, and everything before it (including the 7–10 AM gap) is
@@ -889,7 +905,7 @@
       }
 
       rowsHtml.push(`
-        <div class="match ${(!afterShift && !a.analystId)?'unassigned':''} ${reported?'reported':''}">
+        <div class="match ${(!a.analystId)?'unassigned':''} ${reported?'reported':''}">
           <div class="m-time ${afterShift?'after-shift':''}">${escapeHtml(to12hFromColonString(m.timeIst))}<span>${afterShift?'7–10 AM':'IST'}</span></div>
           <div class="m-teams">
             <div class="vs">${escapeHtml(m.away)} vs ${escapeHtml(m.home)}</div>
