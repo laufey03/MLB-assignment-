@@ -115,19 +115,6 @@ If you're only renaming someone (not swapping people), click into their name, ed
 
 Roster changes affect every date, past and future — there is one single roster, not a separate one per day.
 
-Admin: Pushing a Site Update
-
-When a new version of index.html is provided:
-
-Go to this repository on GitHub.
-Click on the existing index.html file.
-Click the pencil (✏️) edit icon.
-Select all existing content (Ctrl+A / Cmd+A) and delete it.
-Paste in the full contents of the new file.
-Scroll down and click Commit changes.
-Wait 1–2 minutes, then open the live link with a hard refresh (Ctrl+Shift+R / Cmd+Shift+R) to see the update.
-
-Never upload a second file with a different name (like index (1).html). GitHub Pages only serves a file named exactly index.html. If the site goes blank after an update, this is the first thing to check.
 
 Troubleshooting
 Symptom	Likely cause / fix
