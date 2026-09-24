@@ -825,6 +825,13 @@
       matches.length ? `${fmtDateHuman(currentDateKey)}` : 'No matches loaded';
 
     const breakIndex = findBreakIndex();
+    // After-break matches (tonight's) shouldn't even be considered for the workload
+    // until the last match before the break has actually wrapped up — otherwise
+    // tonight's games show up in the count while last night's tail end is still live.
+    const lastBeforeBreakFinished = breakIndex === -1
+      ? true
+      : (breakIndex === 0 ? true : isMatchFinished(matches[breakIndex - 1].sortMs));
+
     const counts = {};
     analysts.forEach(a => counts[a.id] = 0);
 
@@ -835,8 +842,7 @@
 
       const afterBreak = breakIndex !== -1 && idx >= breakIndex;
       if(afterBreak){
-        const msUntilLive = m.sortMs - Date.now();
-        if(msUntilLive > 3 * 3600000) return; // more than 3h away — skip for now
+        if(!lastBeforeBreakFinished) return; // last night's tail end isn't done yet — hold off on tonight's count
       }
       counts[analystId]++;
     });
