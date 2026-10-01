@@ -1054,11 +1054,24 @@
   }
 
   // ---------- date navigation ----------
-  async function setDate(dateKey){
+  // Fetches a date's raw matches/assignments only — no auto-assign logic here, since
+  // that needs `analysts` to already be populated. Safe to call before the roster load
+  // finishes, which is what lets init() fetch both at the same time.
+  async function fetchDateRaw(dateKey){
+    return Promise.all([
+      loadJSON('matches:' + dateKey, []),
+      loadJSON(assignmentsKey(dateKey), {})
+    ]);
+  }
+
+  // Takes already-fetched matches/assignments and does the rest: fetching a fresh
+  // schedule if empty, auto-assigning if needed, and rendering. Requires `analysts`
+  // to already be loaded.
+  async function finishDateSetup(dateKey, freshMatches, freshAssignments){
     currentDateKey = dateKey;
     els.dateInput.value = dateKey;
-    matches = await loadJSON('matches:' + dateKey, []);
-    assignments = await loadJSON(assignmentsKey(dateKey), {});
+    matches = freshMatches;
+    assignments = freshAssignments;
 
     if(matches.length === 0){
       setStatus(`Loading matches for ${fmtDateHuman(dateKey)}…`);
@@ -1080,6 +1093,11 @@
       : `No MLB games found for ${fmtDateHuman(dateKey)}. Add matches manually below.`);
     renderMatches();
     renderWorkloadPanel();
+  }
+
+  async function setDate(dateKey){
+    const [freshMatches, freshAssignments] = await fetchDateRaw(dateKey);
+    await finishDateSetup(dateKey, freshMatches, freshAssignments);
   }
 
   document.getElementById('dateInput').addEventListener('change', e=> setDate(e.target.value));
@@ -1126,9 +1144,17 @@
   // ---------- init ----------
   async function init(){
     tickClock();
-    analysts = await loadJSON(analystsKey(), DEFAULT_ROSTER);
+    // Fire off the roster fetch and the date's raw data fetch at the same time —
+    // they're independent reads, so there's no reason to wait for one before starting
+    // the other. We only combine them once both are back, so auto-assign (which needs
+    // the roster) never runs against an empty analysts list.
+    const [analystsResult, [freshMatches, freshAssignments]] = await Promise.all([
+      loadJSON(analystsKey(), DEFAULT_ROSTER),
+      fetchDateRaw(currentDateKey)
+    ]);
+    analysts = analystsResult;
     renderAnalysts();
-    await setDate(currentDateKey);
+    await finishDateSetup(currentDateKey, freshMatches, freshAssignments);
   }
   init();
 
