@@ -253,6 +253,17 @@
   }
   .m-delete:hover{ background:var(--alert-dim); color:var(--alert); border-color:var(--alert-dim); }
 
+  .loading-state{
+    text-align:center; padding:50px 20px; color:var(--chalk-dim);
+  }
+  .loading-state .spinner{
+    width:34px; height:34px; margin:0 auto 18px;
+    border:3px solid var(--line); border-top-color:var(--amber); border-radius:50%;
+    animation:spin 0.8s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .loading-state .big{ font-family:'Oswald'; font-size:19px; color:var(--chalk); margin-bottom:8px; }
+  .loading-state .small{ font-size:13px; max-width:360px; margin:0 auto; line-height:1.5; }
   .empty-state{
     text-align:center; padding:50px 20px; color:var(--chalk-dim);
   }
@@ -584,7 +595,8 @@
   // stub entries. They're never real, trackable matches — filter them out entirely.
   function isPlaceholderTeamName(name){
     return /\b(TBD|Winner|Seed|Wild Card|Division Series|League Championship|World Series)\b/i.test(name)
-        || /#/.test(name);
+        || /#/.test(name)
+        || /^[A-Z]{2,4}\/[A-Z]{2,4}$/.test(String(name).trim()); // e.g. "ATL/PHI" — series not yet decided
   }
   function isPlaceholderGame(g){
     return isPlaceholderTeamName(g.away) || isPlaceholderTeamName(g.home);
@@ -710,69 +722,46 @@
     if(currentDateKey === todayKey) reconcileScheduleWithLive(todayKey);
   }, 10 * 60000);
 
-  // ---------- live schedule check (via Claude + web search, for dates the snapshot misses or same-day changes) ----------
-  async function callClaudeSearch(prompt){
-    try{
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method:'POST',
-        headers:{ 'Content-Type':'application/json' },
-        body: JSON.stringify({
-          model:'claude-sonnet-4-6',
-          max_tokens:1500,
-          messages:[{ role:'user', content: prompt }],
-          tools:[{ type:'web_search_20250305', name:'web_search' }]
-        })
-      });
-      if(!res.ok) return null;
-      const data = await res.json();
-      const text = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
-      const clean = text.replace(/```json|```/g,'').trim();
-      const start = clean.indexOf('[');
-      const end = clean.lastIndexOf(']');
-      if(start===-1 || end===-1) return null;
-      return JSON.parse(clean.slice(start, end+1));
-    }catch(e){ console.error('live schedule check failed', e); return null; }
-  }
-
-  function etToUtcIso(dateStr, etTimeStr){
-    const m = /^(\d{1,2}):(\d{2})\s*([AP]M)$/i.exec(String(etTimeStr).trim());
-    if(!m || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
-    let hh = parseInt(m[1],10);
-    const mm = m[2];
-    const ap = m[3].toUpperCase();
-    if(ap==='PM' && hh!==12) hh+=12;
-    if(ap==='AM' && hh===12) hh=0;
-    return `${dateStr}T${pad(hh)}:${mm}:00-04:00`; // MLB season = US Eastern Daylight Time
-  }
-
+  // ---------- live schedule check (direct MLB Stats API — works from any hosting
+  // origin, unlike a Claude-API-based search which only works inside Claude's own
+  // sandbox and is blocked by CORS everywhere else, including GitHub Pages) ----------
   async function fetchLiveScheduleForIstDate(dateKey){
-    const usPrev = addDays(dateKey,-1);
-    const prompt = `Search the web for the official MLB game schedule for ${usPrev} and ${dateKey} (both are US Eastern Time calendar dates). List every MLB regular-season or postseason game scheduled on either date that has a confirmed start time AND confirmed, actual team names. Return ONLY a JSON array and nothing else — no prose, no markdown code fences. Each element must have exactly these fields: "date" (the US Eastern calendar date printed on the schedule, format YYYY-MM-DD), "et_time" (start time exactly as published, e.g. "7:05 PM"), "away" (away team full name), "home" (home team full name), "venue" (ballpark name). Omit any game without a confirmed time. Omit any postseason game whose participating teams are not yet determined — never use placeholder labels like "Wild Card Winner", "TBD", "#1 Seed", or similar seed/bracket placeholders as a team name; only include it once the real team name is known. If there are no games with confirmed real teams on either date, return [].`;
-    const parsed = await callClaudeSearch(prompt);
-    if(!Array.isArray(parsed)) return [];
+    const candidates = [addDays(dateKey,-1), dateKey, addDays(dateKey,1)];
+    const results = await Promise.all(candidates.map(async d=>{
+      try{
+        const res = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${d}`);
+        if(!res.ok) return [];
+        const json = await res.json();
+        const games = [];
+        (json.dates || []).forEach(dd => games.push(...(dd.games || [])));
+        return games;
+      }catch(e){ return []; } // network hiccup on this candidate date — just skip it
+    }));
+    const allGames = results.flat();
+    const seen = new Set();
     const out = [];
-    parsed.forEach(g=>{
-      if(!g || !g.away || !g.home) return;
-      if(isPlaceholderTeamName(g.away) || isPlaceholderTeamName(g.home)) return;
-      const iso = etToUtcIso(g.date, g.et_time);
-      if(!iso) return;
-      const conv = utcToIst(iso);
+    allGames.forEach(g=>{
+      if(seen.has(g.gamePk)) return;
+      const away = g.teams?.away?.team?.name || '';
+      const home = g.teams?.home?.team?.name || '';
+      if(!away || !home) return;
+      if(isPlaceholderTeamName(away) || isPlaceholderTeamName(home)) return; // series not decided yet
+      const conv = utcToIst(g.gameDate);
       if(conv.dateKey !== dateKey) return;
+      seen.add(g.gamePk);
       out.push({
-        id: 'live-' + slug(g.away) + '-' + slug(g.home) + '-' + dateKey,
+        id: 'mlb-' + g.gamePk,
         timeIst: conv.time,
         sortMs: conv.sortMs,
-        away: g.away,
-        home: g.home,
-        venue: g.venue || '',
-        status: 'Scheduled',
+        away, home,
+        venue: g.venue?.name || '',
+        status: g.status?.detailedState || '',
         manual: false
       });
     });
     out.sort((a,b)=>a.sortMs-b.sortMs);
     return out;
   }
-  function slug(s){ return String(s).toLowerCase().replace(/[^a-z0-9]+/g,''); }
 
   // ---------- manual match add ----------
   document.getElementById('manAddBtn').addEventListener('click', async ()=>{
@@ -863,7 +852,16 @@
   // no time-of-day gating. Used whenever a date is opened and has no matches yet.
   async function loadAndAssignDate(dateKey){
     let existing = await loadJSON('matches:' + dateKey, []);
-    if(existing.length > 0) return existing;
+    if(existing.length > 0){
+      // Self-heal: a match cached before the placeholder filter existed (or from an
+      // older snapshot) could still be sitting in storage. Strip any placeholder
+      // entries out now rather than showing them forever.
+      const cleaned = existing.filter(m => m.manual || !isPlaceholderGame(m));
+      if(cleaned.length !== existing.length){
+        await saveJSON('matches:' + dateKey, cleaned);
+      }
+      return cleaned;
+    }
     const baked = scheduleForIstDate(dateKey);
     const live = await fetchLiveScheduleForIstDate(dateKey);
     const manualOnes = existing.filter(m=>m.manual);
@@ -1073,9 +1071,24 @@
     matches = freshMatches;
     assignments = freshAssignments;
 
+    // Self-heal: strip any placeholder entries that were cached before this filter
+    // existed (or came from the older season-long snapshot) — this runs on every
+    // view of a date, not just the first time it's loaded.
+    const cleanedMatches = matches.filter(m => m.manual || !isPlaceholderGame(m));
+    if(cleanedMatches.length !== matches.length){
+      matches = cleanedMatches;
+      await saveJSON('matches:' + dateKey, matches);
+    }
+
     if(matches.length === 0){
-      setStatus(`Loading matches for ${fmtDateHuman(dateKey)}…`);
-      renderMatches();
+      setStatus(`Checking the live schedule for ${fmtDateHuman(dateKey)}…`);
+      els.matches.innerHTML = `
+        <div class="loading-state">
+          <div class="spinner"></div>
+          <div class="big">Checking the live MLB schedule…</div>
+          <div class="small">This date hasn't been checked before, so it's looking up the real schedule now. This can take up to 15 seconds — it isn't stuck.</div>
+        </div>
+      `;
       matches = await loadAndAssignDate(dateKey);
       assignments = await loadJSON(assignmentsKey(dateKey), {});
     }
